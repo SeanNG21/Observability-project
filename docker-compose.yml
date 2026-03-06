@@ -231,10 +231,7 @@ services:
     image: docker.elastic.co/kibana/kibana:8.13.0
     container_name: kibana
     restart: unless-stopped
-    environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=KibanaPass123!
+    # Tất cả config trong kibana.yml - không dùng env var
     volumes:
       - ./logs/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:

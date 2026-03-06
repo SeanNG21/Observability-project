@@ -1,24 +1,39 @@
-# kibana.yml
+# ============================================================
+# kibana.yml - Kibana 8.x Configuration
+#
+# Lưu ý Kibana 8.x:
+#   - xpack.security.enabled KHÔNG còn tồn tại (removed)
+#   - xpack.security.encryptionKey KHÔNG tồn tại
+#   - Security do Elasticsearch kiểm soát hoàn toàn
+#   - encryptionKey dùng cho saved objects và reporting vẫn còn
+# ============================================================
+
 server.host: "0.0.0.0"
 server.port: 5601
 server.name: "kibana"
 
+# Kết nối Elasticsearch
 elasticsearch.hosts: ["http://elasticsearch:9200"]
 elasticsearch.username: "kibana_system"
 elasticsearch.password: "KibanaPass123!"
+elasticsearch.requestTimeout: 30000
 
-# Logging
+# Encryption keys - bắt buộc phải có, tối thiểu 32 ký tự
+# Thay bằng chuỗi random thực tế trong production
+xpack.encryptedSavedObjects.encryptionKey: "change-this-to-32-char-random-key1"
+xpack.reporting.encryptionKey: "change-this-to-32-char-random-key2"
+
+# Logging - output ra stdout để Docker thu thập
 logging.appenders.default:
   type: console
   layout:
     type: json
 logging.root.level: warn
 
-# Security
-xpack.security.enabled: true
-xpack.encryptedSavedObjects.encryptionKey: "min-32-char-encryption-key-here!!"
-xpack.reporting.encryptionKey: "min-32-char-reporting-key-here!!!"
-xpack.security.encryptionKey: "min-32-char-security-key-here!!!!"
+# Tắt telemetry
+telemetry.enabled: false
+telemetry.optIn: false
 
-# Monitoring
+# Tắt monitoring gửi về Elastic Cloud
 monitoring.kibana.collection.enabled: false
+monitoring.ui.enabled: false

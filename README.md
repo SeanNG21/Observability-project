@@ -124,7 +124,7 @@ curl http://localhost:13133/
 ### Bước 5: Cài Node Exporter trên mỗi server
 ```bash
 # Trên MỖI server cần monitor (portal, api, db servers):
-bash scripts/install-node-exporter.sh
+ bash app-instrumentation/install-node-exporter.sh
 ```
 
 ### Bước 6: Instrument application
