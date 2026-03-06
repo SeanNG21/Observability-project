@@ -4,8 +4,6 @@
 # Receives traces from apps, exports to Tempo
 # Also forwards metrics to Prometheus
 # ============================================================
-# file_format required by OTel Declarative Config schema validator
-file_format: "0.3"
 
 extensions:
   health_check:
@@ -109,7 +107,8 @@ processors:
         - 'attributes["http.route"] == "/health"'
         - 'attributes["http.route"] == "/metrics"'
         - 'attributes["http.route"] == "/favicon.ico"'
-        - 'attributes["http.url"] contains "/health"'
+        - 'IsMatch(attributes["http.url"], ".*/health.*")'
+        - 'IsMatch(attributes["http.url"], ".*/metrics.*")'
 
   # Tail sampling - keep 100% error traces, sample successful ones
   tail_sampling:

@@ -1,6 +1,5 @@
 # ============================================================
 # alertmanager.yml - Production Configuration
-# Routes: Critical -> Telegram + Email, Warning -> Email
 # ============================================================
 global:
   resolve_timeout: 5m
@@ -10,9 +9,6 @@ global:
   smtp_auth_password: "smtp_password_here"
   smtp_require_tls: true
 
-# ============================================================
-# TEMPLATES
-# ============================================================
 templates:
   - "/etc/alertmanager/templates/*.tmpl"
 
@@ -27,7 +23,6 @@ route:
   receiver: "default-email"
 
   routes:
-    # CRITICAL -> Telegram ngay lập tức + Email
     - match:
         severity: critical
       receiver: "critical-receiver"
@@ -36,7 +31,6 @@ route:
       repeat_interval: 30m
       continue: false
 
-    # WARNING -> Email
     - match:
         severity: warning
       receiver: "warning-email"
@@ -45,7 +39,6 @@ route:
       repeat_interval: 2h
       continue: false
 
-    # DBA team alerts
     - match:
         team: dba
       receiver: "dba-team"
@@ -54,30 +47,22 @@ route:
             severity: critical
           receiver: "dba-critical"
 
-    # Infra team alerts
-    - match:
-        team: infra
-      receiver: "infra-team"
-
 # ============================================================
-# INHIBIT RULES - Tránh alert spam
+# INHIBIT RULES
 # ============================================================
 inhibit_rules:
-  # Nếu host down -> suppress tất cả alert khác trên host đó
   - source_match:
       alertname: "HostDown"
     target_match_re:
       alertname: ".*"
     equal: ["hostname"]
 
-  # Nếu critical đang fire -> suppress warning cùng service
   - source_match:
       severity: "critical"
     target_match:
       severity: "warning"
     equal: ["alertname", "service", "hostname"]
 
-  # Nếu service down -> suppress latency alert của service đó
   - source_match:
       alertname: "ServiceDown"
     target_match:
@@ -94,46 +79,54 @@ receivers:
       - to: "ops-team@yourdomain.com"
         send_resolved: true
         html: '{{ template "email.default.html" . }}'
-        subject: '[{{ .Status | toUpper }}] {{ .CommonAnnotations.summary }}'
+        headers:
+          Subject: '[{{ .Status | toUpper }}] {{ .CommonAnnotations.summary }}'
 
   - name: "critical-receiver"
     telegram_configs:
       - bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
-        chat_id: -1001234567890  # Group chat ID
+        chat_id: -1001234567890
         message: '{{ template "telegram.critical.message" . }}'
         parse_mode: "HTML"
         send_resolved: true
     email_configs:
-      - to: "ops-critical@yourdomain.com, cto@yourdomain.com"
+      - to: "ops-critical@yourdomain.com"
         send_resolved: true
         html: '{{ template "email.critical.html" . }}'
-        subject: '🔴 [CRITICAL] {{ .CommonAnnotations.summary }}'
+        headers:
+          Subject: '[CRITICAL] {{ .CommonAnnotations.summary }}'
 
   - name: "warning-email"
     email_configs:
       - to: "ops-team@yourdomain.com"
         send_resolved: true
         html: '{{ template "email.default.html" . }}'
-        subject: '⚠️ [WARNING] {{ .CommonAnnotations.summary }}'
+        headers:
+          Subject: '[WARNING] {{ .CommonAnnotations.summary }}'
 
   - name: "dba-team"
     email_configs:
       - to: "dba-team@yourdomain.com"
         send_resolved: true
-        subject: '[DB ALERT] {{ .CommonAnnotations.summary }}'
+        headers:
+          Subject: '[DB ALERT] {{ .CommonAnnotations.summary }}'
 
   - name: "dba-critical"
     telegram_configs:
       - bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
-        chat_id: -1009876543210  # DBA group
+        chat_id: -1009876543210
         message: '{{ template "telegram.critical.message" . }}'
         parse_mode: "HTML"
         send_resolved: true
     email_configs:
-      - to: "dba-team@yourdomain.com, ops-critical@yourdomain.com"
+      - to: "dba-team@yourdomain.com"
         send_resolved: true
+        headers:
+          Subject: '[DB CRITICAL] {{ .CommonAnnotations.summary }}'
 
   - name: "infra-team"
     email_configs:
       - to: "infra-team@yourdomain.com"
         send_resolved: true
+        headers:
+          Subject: '[INFRA] {{ .CommonAnnotations.summary }}'

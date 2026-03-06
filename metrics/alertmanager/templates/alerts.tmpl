@@ -1,112 +1,176 @@
-{{ define "telegram.critical.message" }}
+{{/* ============================================================
+     Alertmanager Templates
+     Chỉ dùng hàm Go text/template chuẩn + hàm Alertmanager built-in:
+       - toUpper, toLower, title (string)
+       - humanize, humanize1024, humanizePercentage, humanizeDuration (number)
+       - since, duration (time)
+       - join (slice)
+       KHÔNG dùng: default, now, contains, hasPrefix - những hàm này không tồn tại
+     ============================================================ */}}
+
+{{/* ============================================================
+     TELEGRAM - Critical message
+     ============================================================ */}}
+{{ define "telegram.critical.message" -}}
 {{- if eq .Status "firing" -}}
 🔴 <b>ALERT FIRING</b>
 {{- else -}}
 ✅ <b>ALERT RESOLVED</b>
 {{- end }}
 
-<b>Alert:</b> {{ .CommonAnnotations.summary }}
+<b>Summary:</b> {{ .CommonAnnotations.summary }}
 <b>Severity:</b> {{ .CommonLabels.severity | toUpper }}
 <b>Env:</b> {{ .CommonLabels.env }}
-<b>Time:</b> {{ .CommonAnnotations.startsAt | default "now" }}
+<b>Cluster:</b> {{ .CommonLabels.cluster }}
 
-{{ range .Alerts }}
-<b>Instance:</b> {{ .Labels.instance | default "N/A" }}
-<b>Hostname:</b> {{ .Labels.hostname | default "N/A" }}
-<b>Service:</b> {{ .Labels.service | default "N/A" }}
-<b>Detail:</b> {{ .Annotations.description | default "No description" }}
+{{ range .Alerts -}}
+<b>─────────────────────</b>
+<b>Alert:</b> {{ .Labels.alertname }}
+{{- if .Labels.hostname }}
+<b>Host:</b> {{ .Labels.hostname }}
+{{- end }}
+{{- if .Labels.instance }}
+<b>Instance:</b> {{ .Labels.instance }}
+{{- end }}
+{{- if .Labels.service }}
+<b>Service:</b> {{ .Labels.service }}
+{{- end }}
+<b>Started:</b> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
 
-{{ if .Annotations.runbook }}
-<b>📋 Runbook:</b>
+{{- if .Annotations.description }}
+<b>Detail:</b> {{ .Annotations.description }}
+{{- end }}
+{{- if .Annotations.runbook }}
+<b>Runbook:</b>
 <pre>{{ .Annotations.runbook }}</pre>
+{{- end }}
 {{ end }}
+<a href="http://grafana.yourdomain.com/explore">📊 Grafana</a> | <a href="http://alertmanager.yourdomain.com/#/alerts">🔔 Alertmanager</a>
+{{- end }}
 
-<b>🔗 Grafana:</b> <a href="http://grafana.yourdomain.com/explore">Explore</a>
-<b>🔗 Alertmanager:</b> <a href="http://alertmanager.yourdomain.com/#/alerts">Alerts</a>
-{{ end }}
-{{ end }}
 
-{{ define "email.critical.html" }}
+{{/* ============================================================
+     EMAIL - Critical HTML
+     ============================================================ */}}
+{{ define "email.critical.html" -}}
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <style>
-  body { font-family: Arial, sans-serif; background: #f5f5f5; }
-  .container { max-width: 800px; margin: 20px auto; background: white; border-radius: 8px; overflow: hidden; }
-  .header { background: {{ if eq .Status "firing" }}#dc3545{{ else }}#28a745{{ end }}; color: white; padding: 20px; }
-  .header h1 { margin: 0; font-size: 24px; }
-  .body { padding: 20px; }
-  .alert-box { border-left: 4px solid {{ if eq .Status "firing" }}#dc3545{{ else }}#28a745{{ end }}; padding: 15px; margin: 10px 0; background: #f8f9fa; }
-  .label { font-weight: bold; color: #333; }
-  .value { color: #666; }
-  .runbook { background: #272822; color: #f8f8f2; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 13px; white-space: pre-wrap; }
-  .footer { padding: 15px; background: #f5f5f5; font-size: 12px; color: #888; }
-  .btn { display: inline-block; padding: 8px 16px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; margin: 5px; }
+  body { font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 0; }
+  .container { max-width: 800px; margin: 20px auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .header { background: {{ if eq .Status "firing" }}#dc3545{{ else }}#28a745{{ end }}; color: white; padding: 24px; }
+  .header h1 { margin: 0 0 8px 0; font-size: 22px; }
+  .header p { margin: 0; opacity: 0.9; }
+  .meta { padding: 16px 24px; background: #f8f9fa; border-bottom: 1px solid #dee2e6; font-size: 14px; }
+  .meta span { margin-right: 20px; }
+  .body { padding: 24px; }
+  .alert-box { border-left: 4px solid {{ if eq .Status "firing" }}#dc3545{{ else }}#28a745{{ end }}; padding: 16px; margin: 12px 0; background: #f8f9fa; border-radius: 0 4px 4px 0; }
+  .alert-box table { border-collapse: collapse; width: 100%; }
+  .alert-box td { padding: 3px 8px 3px 0; font-size: 14px; vertical-align: top; }
+  .alert-box td:first-child { font-weight: bold; color: #555; width: 100px; white-space: nowrap; }
+  .runbook { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre-wrap; margin-top: 8px; }
+  .buttons { margin-top: 20px; }
+  .btn { display: inline-block; padding: 10px 20px; color: white; text-decoration: none; border-radius: 4px; margin-right: 8px; font-size: 14px; }
+  .btn-blue { background: #0d6efd; }
+  .btn-orange { background: #fd7e14; }
+  .btn-green { background: #198754; }
+  .footer { padding: 12px 24px; background: #f5f5f5; font-size: 12px; color: #888; border-top: 1px solid #dee2e6; }
 </style>
 </head>
 <body>
 <div class="container">
+
   <div class="header">
     <h1>{{ if eq .Status "firing" }}🔴 ALERT FIRING{{ else }}✅ ALERT RESOLVED{{ end }}</h1>
     <p>{{ .CommonAnnotations.summary }}</p>
   </div>
-  <div class="body">
-    <p>
-      <span class="label">Severity:</span> <span class="value">{{ .CommonLabels.severity | toUpper }}</span><br>
-      <span class="label">Environment:</span> <span class="value">{{ .CommonLabels.env }}</span><br>
-      <span class="label">Cluster:</span> <span class="value">{{ .CommonLabels.cluster }}</span><br>
-      <span class="label">Alert Count:</span> <span class="value">{{ len .Alerts }}</span>
-    </p>
 
+  <div class="meta">
+    <span><b>Severity:</b> {{ .CommonLabels.severity | toUpper }}</span>
+    <span><b>Env:</b> {{ .CommonLabels.env }}</span>
+    <span><b>Cluster:</b> {{ .CommonLabels.cluster }}</span>
+    <span><b>Alerts:</b> {{ len .Alerts }}</span>
+  </div>
+
+  <div class="body">
     {{ range .Alerts }}
     <div class="alert-box">
-      <p>
-        <span class="label">Alert:</span> <span class="value">{{ .Labels.alertname }}</span><br>
-        <span class="label">Instance:</span> <span class="value">{{ .Labels.instance | default "N/A" }}</span><br>
-        <span class="label">Hostname:</span> <span class="value">{{ .Labels.hostname | default "N/A" }}</span><br>
-        <span class="label">Service:</span> <span class="value">{{ .Labels.service | default "N/A" }}</span><br>
-        <span class="label">Started:</span> <span class="value">{{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</span>
-      </p>
-      <p><span class="label">Description:</span><br>{{ .Annotations.description | default "No description" }}</p>
+      <table>
+        <tr><td>Alert</td><td>{{ .Labels.alertname }}</td></tr>
+        {{ if .Labels.hostname }}<tr><td>Hostname</td><td>{{ .Labels.hostname }}</td></tr>{{ end }}
+        {{ if .Labels.instance }}<tr><td>Instance</td><td>{{ .Labels.instance }}</td></tr>{{ end }}
+        {{ if .Labels.service }}<tr><td>Service</td><td>{{ .Labels.service }}</td></tr>{{ end }}
+        <tr><td>Started</td><td>{{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</td></tr>
+        {{ if .Annotations.description }}
+        <tr><td>Detail</td><td>{{ .Annotations.description }}</td></tr>
+        {{ end }}
+      </table>
       {{ if .Annotations.runbook }}
-      <p><span class="label">📋 Runbook:</span></p>
       <div class="runbook">{{ .Annotations.runbook }}</div>
       {{ end }}
     </div>
     {{ end }}
 
-    <p>
-      <a href="http://grafana.yourdomain.com" class="btn">📊 Grafana</a>
-      <a href="http://alertmanager.yourdomain.com/#/alerts" class="btn">🔔 Alertmanager</a>
-      <a href="http://kibana.yourdomain.com" class="btn">📋 Kibana Logs</a>
-    </p>
+    <div class="buttons">
+      <a href="http://grafana.yourdomain.com" class="btn btn-blue">📊 Grafana</a>
+      <a href="http://alertmanager.yourdomain.com/#/alerts" class="btn btn-orange">🔔 Alertmanager</a>
+      <a href="http://kibana.yourdomain.com" class="btn btn-green">📋 Kibana</a>
+    </div>
   </div>
+
   <div class="footer">
-    Generated by Alertmanager | {{ .CommonLabels.cluster }} | {{ now.Format "2006-01-02 15:04:05" }}
+    Alertmanager &nbsp;|&nbsp; {{ .CommonLabels.cluster }} &nbsp;|&nbsp; {{ .CommonLabels.env }}
   </div>
+
 </div>
 </body>
 </html>
-{{ end }}
+{{- end }}
 
-{{ define "email.default.html" }}
+
+{{/* ============================================================
+     EMAIL - Default/Warning HTML
+     ============================================================ */}}
+{{ define "email.default.html" -}}
 <!DOCTYPE html>
 <html>
-<body style="font-family: Arial, sans-serif;">
-<div style="max-width: 700px; margin: 0 auto; padding: 20px;">
-  <h2 style="color: {{ if eq .Status "firing" }}#dc3545{{ else }}#28a745{{ end }};">
-    {{ if eq .Status "firing" }}⚠️ Alert Firing{{ else }}✅ Alert Resolved{{ end }}
-  </h2>
-  <p><strong>{{ .CommonAnnotations.summary }}</strong></p>
-  <p>Severity: {{ .CommonLabels.severity }} | Env: {{ .CommonLabels.env }}</p>
-  {{ range .Alerts }}
-  <div style="border-left: 3px solid #ffc107; padding-left: 10px; margin: 10px 0;">
-    <p>{{ .Annotations.description }}</p>
-    <small>Instance: {{ .Labels.instance }} | Started: {{ .StartsAt.Format "15:04:05" }}</small>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; }
+  .container { max-width: 700px; margin: 20px auto; background: white; border-radius: 8px; overflow: hidden; }
+  .header { background: {{ if eq .Status "firing" }}#fd7e14{{ else }}#28a745{{ end }}; color: white; padding: 20px; }
+  .header h2 { margin: 0; }
+  .body { padding: 20px; }
+  .alert-item { border-left: 3px solid #ffc107; padding: 10px 12px; margin: 10px 0; background: #fffbf0; }
+  .footer { padding: 10px 20px; font-size: 12px; color: #999; border-top: 1px solid #eee; }
+  a { color: #0d6efd; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h2>{{ if eq .Status "firing" }}⚠️ Alert Firing{{ else }}✅ Alert Resolved{{ end }}</h2>
   </div>
-  {{ end }}
-  <p><a href="http://grafana.yourdomain.com">View in Grafana</a></p>
+  <div class="body">
+    <p><b>{{ .CommonAnnotations.summary }}</b></p>
+    <p>Severity: <b>{{ .CommonLabels.severity }}</b> &nbsp;|&nbsp; Env: <b>{{ .CommonLabels.env }}</b></p>
+
+    {{ range .Alerts }}
+    <div class="alert-item">
+      <b>{{ .Labels.alertname }}</b>
+      {{ if .Labels.instance }} &mdash; {{ .Labels.instance }}{{ end }}<br>
+      {{ if .Annotations.description }}<small>{{ .Annotations.description }}</small><br>{{ end }}
+      <small>Started: {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</small>
+    </div>
+    {{ end }}
+
+    <p><a href="http://grafana.yourdomain.com">View in Grafana →</a></p>
+  </div>
+  <div class="footer">Alertmanager | {{ .CommonLabels.cluster }}</div>
 </div>
 </body>
 </html>
-{{ end }}
+{{- end }}

@@ -1,71 +1,32 @@
 # ============================================================
 # filebeat.yml - Production Log Collection
-# Collects: app logs, nginx, syslog, auth, docker containers
+# Collects: Docker container logs, nginx, syslog, app logs
 # ============================================================
-filebeat.config:
-  modules:
-    path: ${path.config}/modules.d/*.yml
-    reload.enabled: false
 
-filebeat.autodiscover:
-  providers:
-    # Docker auto-discovery
-    - type: docker
-      hints.enabled: true
-      hints.default_config:
-        type: container
-        paths:
-          - /var/lib/docker/containers/${data.container.id}/*.log
-      templates:
-        # Portal service
-        - condition:
-            contains:
-              docker.container.labels.service: "portal"
-          config:
-            - type: container
-              paths:
-                - /var/lib/docker/containers/${data.container.id}/*.log
-              json.keys_under_root: true
-              json.add_error_key: true
-              json.overwrite_keys: true
-              fields:
-                service: "portal"
-                log_type: "application"
-              fields_under_root: true
-        # API service
-        - condition:
-            contains:
-              docker.container.labels.service: "api"
-          config:
-            - type: container
-              paths:
-                - /var/lib/docker/containers/${data.container.id}/*.log
-              json.keys_under_root: true
-              json.add_error_key: true
-              json.overwrite_keys: true
-              fields:
-                service: "api"
-                log_type: "application"
-              fields_under_root: true
+# strict.perms: false bắt buộc trên WSL/Windows
+# vì file mount từ NTFS không giữ được Linux ownership
+filebeat.registry:
+  path: /usr/share/filebeat/data/registry
 
+# ============================================================
+# INPUTS
+# ============================================================
 filebeat.inputs:
-  # Application JSON logs
-  - type: filestream
-    id: app-json-logs
+
+  # Docker container logs - tất cả containers
+  - type: container
+    id: docker-containers
     enabled: true
     paths:
-      - /var/log/app/portal/*.log
-      - /var/log/app/api/*.log
-    parsers:
-      - ndjson:
-          target: ""
-          overwrite_keys: true
-          add_error_key: true
+      - /var/lib/docker/containers/*/*.log
+    stream: all
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
     fields:
-      log_type: "application"
+      log_type: "docker"
       env: "production"
     fields_under_root: true
-    close_inactive: 30m
 
   # Nginx Access Log
   - type: filestream
@@ -79,7 +40,6 @@ filebeat.inputs:
       service: "nginx"
       env: "production"
     fields_under_root: true
-    close_inactive: 30m
 
   # Nginx Error Log
   - type: filestream
@@ -87,7 +47,6 @@ filebeat.inputs:
     enabled: true
     paths:
       - /var/log/nginx/error.log
-      - /var/log/nginx/*-error.log
     fields:
       log_type: "nginx_error"
       service: "nginx"
@@ -104,6 +63,7 @@ filebeat.inputs:
     fields:
       log_type: "syslog"
       service: "system"
+      env: "production"
     fields_under_root: true
 
   # Auth Log
@@ -116,65 +76,39 @@ filebeat.inputs:
     fields:
       log_type: "auth"
       service: "system"
+      env: "production"
     fields_under_root: true
 
-  # MySQL Slow Query Log
-  - type: filestream
-    id: mysql-slow
-    enabled: true
-    paths:
-      - /var/log/mysql/slow.log
-    fields:
-      log_type: "mysql_slow"
-      service: "mysql"
-    fields_under_root: true
-    multiline.type: pattern
-    multiline.pattern: '^# Time:'
-    multiline.negate: true
-    multiline.match: after
-
-  # MySQL Error Log
-  - type: filestream
-    id: mysql-error
-    enabled: true
-    paths:
-      - /var/log/mysql/error.log
-    fields:
-      log_type: "mysql_error"
-      service: "mysql"
-    fields_under_root: true
-
-# Add hostname to all events
+# ============================================================
+# PROCESSORS - thêm metadata vào mọi event
+# ============================================================
 processors:
   - add_host_metadata:
       when.not.contains.tags: forwarded
-  - add_docker_metadata:
-      host: "unix:///var/run/docker.sock"
   - add_fields:
       target: ""
       fields:
         cluster: "production"
-        region: "vn-hanoi"
 
-# Output to Logstash for processing
+# ============================================================
+# OUTPUT → Logstash
+# ============================================================
 output.logstash:
   hosts:
     - "${LOGSTASH_HOST:logstash:5044}"
   bulk_max_size: 2048
   timeout: 15
-  worker: 4
+  worker: 2
   compression_level: 3
 
-# Logging
-logging.level: info
-logging.to_files: true
-logging.files:
-  path: /var/log/filebeat
-  name: filebeat
-  keepfiles: 7
-  permissions: 0644
+# ============================================================
+# LOGGING
+# ============================================================
+logging.level: warning
+logging.to_stderr: true
 
-# Monitoring
-monitoring.enabled: true
+# ============================================================
+# HTTP endpoint để monitor filebeat
+# ============================================================
 http.enabled: true
 http.port: 5066
