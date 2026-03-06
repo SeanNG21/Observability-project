@@ -1,0 +1,29 @@
+# elasticsearch.yml
+cluster.name: "observability-cluster"
+node.name: "es01"
+
+network.host: 0.0.0.0
+http.port: 9200
+transport.port: 9300
+
+discovery.type: single-node
+
+# Security
+xpack.security.enabled: true
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.enabled: false
+
+# Memory settings
+bootstrap.memory_lock: true
+
+# Path settings
+path.data: /usr/share/elasticsearch/data
+path.logs: /var/log/elasticsearch
+
+# Performance
+indices.memory.index_buffer_size: 30%
+thread_pool.write.queue_size: 1000
+thread_pool.search.queue_size: 1000
+
+# ILM
+indices.lifecycle.poll_interval: 10m

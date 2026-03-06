@@ -1,0 +1,216 @@
+# ============================================================
+# otel-collector-config.yaml
+# OpenTelemetry Collector Contrib - Production Configuration
+# Receives traces from apps, exports to Tempo
+# Also forwards metrics to Prometheus
+# ============================================================
+# file_format required by OTel Declarative Config schema validator
+file_format: "0.3"
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+receivers:
+  # OTLP - Main receiver for traces, metrics, logs from apps
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 32
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://*"
+            - "https://*"
+
+  # Jaeger format (for legacy apps)
+  jaeger:
+    protocols:
+      thrift_http:
+        endpoint: 0.0.0.0:14268
+      grpc:
+        endpoint: 0.0.0.0:14250
+
+  # Zipkin format
+  zipkin:
+    endpoint: 0.0.0.0:9411
+
+  # Prometheus scrape for collector self-metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "otel-collector"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["0.0.0.0:8888"]
+
+processors:
+  # Memory limiter - MUST be first processor
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Batch processor - improve efficiency
+  batch:
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+    timeout: 5s
+
+  # Resource detection - auto-detect host info
+  resourcedetection:
+    detectors:
+      - system
+      - docker
+      - env
+    timeout: 5s
+    override: false
+
+  # Add resource attributes to all telemetry
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "production"
+        action: upsert
+      - key: service.namespace
+        value: "yourdomain"
+        action: upsert
+
+  # Attribute processor - normalize span attributes
+  attributes:
+    actions:
+      # Ensure trace_id is propagated as attribute
+      - key: trace_id
+        from_attribute: "trace.id"
+        action: upsert
+      # Normalize HTTP attributes
+      - key: http.method
+        action: convert
+        converted_type: string
+      # Remove sensitive data
+      - key: http.request.header.authorization
+        action: delete
+      - key: db.statement
+        action: hash
+        # Hash long SQL to avoid PII leakage in traces
+
+  # Span processor - filter and transform spans
+  filter:
+    error_mode: ignore
+    traces:
+      span:
+        # Exclude health check spans
+        - 'attributes["http.route"] == "/health"'
+        - 'attributes["http.route"] == "/metrics"'
+        - 'attributes["http.route"] == "/favicon.ico"'
+        - 'attributes["http.url"] contains "/health"'
+
+  # Tail sampling - keep 100% error traces, sample successful ones
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    expected_new_traces_per_sec: 100
+    policies:
+      # Always sample errors
+      - name: errors-policy
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      # Always sample slow traces (>2s)
+      - name: slow-traces-policy
+        type: latency
+        latency: {threshold_ms: 2000}
+      # Sample 10% of successful traces
+      - name: probabilistic-policy
+        type: probabilistic
+        probabilistic: {sampling_percentage: 10}
+
+exporters:
+  # Export traces to Tempo
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      num_consumers: 10
+      queue_size: 10000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Export metrics to Prometheus (pull)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "otelcol"
+    send_timestamps: true
+    metric_expiration: 180m
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Export logs to Elasticsearch via OTLP
+  otlphttp/elasticsearch:
+    endpoint: "http://elasticsearch:9200"
+    tls:
+      insecure: true
+
+  # Debug exporter (disable in production)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  # Self-monitoring metrics
+  prometheus/internal:
+    endpoint: "0.0.0.0:8888"
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - resource
+        - attributes
+        - filter
+        - batch
+        # tail_sampling - enable when needed
+      exporters: [otlp/tempo, debug]
+
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp, prometheus]
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - resource
+        - batch
+      exporters: [prometheus]
+
+    # Logs pipeline (if apps send logs via OTLP)
+    logs:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - resource
+        - batch
+      exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: basic
+      address: 0.0.0.0:8888

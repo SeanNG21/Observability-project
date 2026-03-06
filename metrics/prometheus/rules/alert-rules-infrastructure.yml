@@ -1,0 +1,268 @@
+# ============================================================
+# alert-rules-infrastructure.yml
+# Infrastructure & OS Alert Rules - Production Ready
+# ============================================================
+groups:
+
+  # ==========================================================
+  # HOST / NODE ALERTS
+  # ==========================================================
+  - name: host.rules
+    rules:
+
+      # HOST DOWN
+      - alert: HostDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Host DOWN: {{ $labels.hostname }}"
+          description: |
+            Server {{ $labels.hostname }} ({{ $labels.instance }}) is not reachable.
+            Job: {{ $labels.job }}
+            Environment: {{ $labels.env }}
+          runbook: |
+            1. Ping server: ping {{ $labels.hostname }}
+            2. SSH vào server kiểm tra: ssh {{ $labels.hostname }}
+            3. Kiểm tra network/firewall
+            4. Kiểm tra systemd status node_exporter
+            5. Restart node_exporter nếu cần
+
+      # CPU HIGH
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by(hostname, env) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ CPU cao: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: |
+            CPU usage trên {{ $labels.hostname }} đang ở {{ $value | humanize }}% (threshold: 85%)
+            Thời gian cao liên tục: 5 phút
+          runbook: |
+            1. top -c hoặc htop để xem process
+            2. ps aux --sort=-%cpu | head -20
+            3. Kiểm tra nếu có process zombie: ps aux | grep Z
+            4. Xem load average: uptime
+            5. Xem history: sar -u 1 10
+
+      - alert: CriticalCPUUsage
+        expr: |
+          100 - (avg by(hostname, env) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 CPU CRITICAL: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: "CPU {{ $labels.hostname }} đạt {{ $value | humanize }}% - Cần xử lý ngay!"
+
+      # RAM HIGH
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ RAM cao: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: |
+            RAM usage: {{ $value | humanize }}% trên {{ $labels.hostname }}
+            RAM available: {{ with query "node_memory_MemAvailable_bytes{hostname=~\"" }}{{ . | first | value | humanize1024 }}B{{ end }}
+          runbook: |
+            1. free -h để xem chi tiết
+            2. ps aux --sort=-%mem | head -20
+            3. cat /proc/meminfo
+            4. Kiểm tra swap: swapon --show
+
+      - alert: CriticalMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 RAM CRITICAL: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: "RAM usage CRITICAL {{ $value | humanize }}% - Nguy cơ OOM Kill!"
+
+      # DISK SPACE
+      - alert: DiskSpaceWarning
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs|overlay"} 
+          / node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|overlay"}) * 100 < 20
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Disk sắp đầy: {{ $labels.hostname }} mount={{ $labels.mountpoint }}"
+          description: |
+            Disk còn lại: {{ $value | humanize }}% trên {{ $labels.mountpoint }}
+            Server: {{ $labels.hostname }}
+          runbook: |
+            1. df -h để xem chi tiết
+            2. du -sh /* 2>/dev/null | sort -rh | head -20
+            3. Xóa log cũ: find /var/log -name "*.gz" -mtime +30 -delete
+            4. Kiểm tra docker volume: docker system df
+
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs|overlay"} 
+          / node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|overlay"}) * 100 < 10
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 DISK CRITICAL: {{ $labels.hostname }} mount={{ $labels.mountpoint }}"
+          description: "Disk chỉ còn {{ $value | humanize }}% - Hệ thống có thể bị crash!"
+
+      # DISK IO
+      - alert: DiskIOHighRead
+        expr: |
+          rate(node_disk_read_bytes_total[5m]) > 200 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Disk READ IO cao: {{ $labels.hostname }} ({{ $value | humanize }}B/s)"
+          description: "Disk read IO: {{ $value | humanize }}B/s (threshold: 200MB/s) trên {{ $labels.hostname }}"
+          runbook: |
+            1. iostat -x 1 10
+            2. iotop -o
+            3. Xem process gây IO: lsof | grep $disk
+
+      - alert: DiskIOHighWrite
+        expr: |
+          rate(node_disk_written_bytes_total[5m]) > 200 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Disk WRITE IO cao: {{ $labels.hostname }} ({{ $value | humanize }}B/s)"
+          description: "Disk write IO: {{ $value | humanize }}B/s trên {{ $labels.hostname }}"
+
+      # NETWORK
+      - alert: NetworkHighInbound
+        expr: |
+          rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m]) > 100 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Network IN cao: {{ $labels.hostname }} {{ $labels.device }}"
+          description: "Inbound traffic: {{ $value | humanize }}B/s trên {{ $labels.device }}"
+
+      - alert: NetworkHighOutbound
+        expr: |
+          rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m]) > 100 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Network OUT cao: {{ $labels.hostname }} {{ $labels.device }}"
+          description: "Outbound traffic: {{ $value | humanize }}B/s trên {{ $labels.device }}"
+
+      # LOAD AVERAGE
+      - alert: HighLoadAverage
+        expr: |
+          node_load15 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Load Average cao: {{ $labels.hostname }} ({{ $value | humanize }})"
+          description: "Load Average 15m per CPU core: {{ $value | humanize }} (threshold: 2.0)"
+          runbook: |
+            1. uptime
+            2. vmstat 1 10
+            3. ps aux --sort=-%cpu | head -20
+
+      # SWAP HIGH
+      - alert: SwapUsageHigh
+        expr: |
+          (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Swap usage cao: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: "Swap đang dùng {{ $value | humanize }}% - RAM có thể thiếu"
+
+      # SYSTEM CLOCK
+      - alert: SystemClockSkew
+        expr: |
+          abs(node_timex_offset_seconds) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Clock skew: {{ $labels.hostname }}"
+          description: "System clock lệch {{ $value }}s - Có thể ảnh hưởng TLS và correlation"
+          runbook: "systemctl restart chronyd hoặc ntpd"
+
+  # ==========================================================
+  # SERVICE / PORT MONITORING
+  # ==========================================================
+  - name: service.rules
+    rules:
+
+      - alert: ServiceDown
+        expr: up{job=~"portal-service|api-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: app
+        annotations:
+          summary: "🔴 Service DOWN: {{ $labels.service }} - {{ $labels.instance }}"
+          description: |
+            Service {{ $labels.service }} không phản hồi tại {{ $labels.instance }}
+            Environment: {{ $labels.env }}
+          runbook: |
+            1. curl -v http://{{ $labels.instance }}/health
+            2. Kiểm tra docker/systemd: systemctl status {{ $labels.service }}
+            3. Xem log: journalctl -u {{ $labels.service }} -n 100
+            4. Restart: systemctl restart {{ $labels.service }}
+
+      - alert: HTTPEndpointDown
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: app
+        annotations:
+          summary: "🔴 HTTP Endpoint DOWN: {{ $labels.instance }}"
+          description: "URL {{ $labels.instance }} không phản hồi HTTP 2xx"
+
+      - alert: PortDown
+        expr: probe_success{job="blackbox-tcp"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Port DOWN: {{ $labels.instance }}"
+          description: "TCP port {{ $labels.instance }} không thể kết nối"
+
+      - alert: HTTPSlowResponse
+        expr: probe_duration_seconds{job="blackbox-http"} > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "⚠️ HTTP chậm: {{ $labels.instance }} ({{ $value | humanize }}s)"
+          description: "Thời gian phản hồi {{ $value | humanize }}s (threshold: 3s)"

@@ -1,0 +1,212 @@
+# ============================================================
+# prometheus.yml - Production Configuration
+# ============================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: "production"
+    env: "prod"
+    region: "vn-hanoi"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+      timeout: 10s
+      api_version: v2
+
+# Load alert rule files
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+# ============================================================
+# SCRAPE CONFIGS
+# ============================================================
+scrape_configs:
+
+  # ----- Prometheus self-monitoring -----
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+    relabel_configs:
+      - target_label: service
+        replacement: "prometheus"
+
+  # ----- Node Exporter - OS Metrics -----
+  - job_name: "node-exporter"
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "portal-server-01:9100"
+          - "portal-server-02:9100"
+          - "api-server-01:9100"
+          - "api-server-02:9100"
+          - "db-server-01:9100"
+          - "db-server-02:9100"
+        labels:
+          env: "prod"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [__address__]
+        regex: "([^:]+):.*"
+        target_label: hostname
+        replacement: "$1"
+
+  # ----- Application Metrics - Portal Service -----
+  - job_name: "portal-service"
+    scrape_interval: 10s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets:
+          - "portal-server-01:8080"
+          - "portal-server-02:8080"
+        labels:
+          service: "portal"
+          env: "prod"
+          tier: "frontend"
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "([^:]+):.*"
+        target_label: hostname
+        replacement: "$1"
+
+  # ----- Application Metrics - API Service -----
+  - job_name: "api-service"
+    scrape_interval: 10s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets:
+          - "api-server-01:8081"
+          - "api-server-02:8081"
+        labels:
+          service: "api"
+          env: "prod"
+          tier: "backend"
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "([^:]+):.*"
+        target_label: hostname
+        replacement: "$1"
+
+  # ----- Nginx Exporter -----
+  - job_name: "nginx"
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "nginx-01:9113"
+          - "nginx-02:9113"
+        labels:
+          service: "nginx"
+          env: "prod"
+
+  # ----- MySQL/MariaDB Exporter -----
+  - job_name: "mysql"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "db-server-01:9104"
+          - "db-server-02:9104"
+        labels:
+          service: "mysql"
+          env: "prod"
+          tier: "database"
+
+  # ----- PostgreSQL Exporter -----
+  - job_name: "postgresql"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "db-server-01:9187"
+        labels:
+          service: "postgresql"
+          env: "prod"
+          tier: "database"
+
+  # ----- Redis Exporter -----
+  - job_name: "redis"
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "redis-server-01:9121"
+        labels:
+          service: "redis"
+          env: "prod"
+
+  # ----- Kafka Exporter -----
+  - job_name: "kafka"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "kafka-01:9308"
+        labels:
+          service: "kafka"
+          env: "prod"
+
+  # ----- Blackbox Exporter - HTTP/TCP Probing -----
+  - job_name: "blackbox-http"
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - "https://portal.yourdomain.com/health"
+          - "https://api.yourdomain.com/health"
+          - "https://api.yourdomain.com/v1/status"
+        labels:
+          env: "prod"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "blackbox-exporter:9115"
+
+  - job_name: "blackbox-tcp"
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+          - "db-server-01:3306"     # MySQL
+          - "db-server-01:5432"     # PostgreSQL
+          - "redis-server-01:6379"  # Redis
+          - "kafka-01:9092"         # Kafka
+        labels:
+          env: "prod"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "blackbox-exporter:9115"
+
+  # ----- OTel Collector self-metrics -----
+  - job_name: "otel-collector"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels:
+          service: "otel-collector"
+
+  # ----- Elasticsearch Exporter -----
+  - job_name: "elasticsearch"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "elasticsearch-exporter:9114"
+        labels:
+          service: "elasticsearch"
+
+  # ----- Alertmanager self-monitoring -----
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          service: "alertmanager"

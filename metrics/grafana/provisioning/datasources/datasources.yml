@@ -1,0 +1,76 @@
+# ============================================================
+# Grafana Datasource Provisioning
+# Auto-configure all datasources on startup
+# ============================================================
+apiVersion: 1
+
+datasources:
+
+  # Prometheus - Metrics
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: prometheus
+    jsonData:
+      timeInterval: "15s"
+      queryTimeout: "60s"
+      httpMethod: POST
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+    version: 1
+    editable: true
+
+  # Tempo - Distributed Traces
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    uid: tempo
+    jsonData:
+      httpMethod: GET
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: ""
+      tracesToLogsV2:
+        datasourceUid: ""
+        # Link traces to logs via trace_id
+        customQuery: true
+        query: '{ "query": { "term": { "trace_id": "${__trace.traceId}" } } }'
+      tracesToMetrics:
+        datasourceUid: prometheus
+        queries:
+          - name: "Request Rate"
+            query: "rate(http_requests_total{service=\"$${__span.tags[\"service.name\"]}\"}[5m])"
+          - name: "Error Rate"
+            query: "rate(http_requests_total{service=\"$${__span.tags[\"service.name\"]}\",status=~\"5..\"}[5m])"
+    version: 1
+    editable: true
+
+  # Elasticsearch - Logs
+  - name: Elasticsearch
+    type: elasticsearch
+    access: proxy
+    url: http://elasticsearch:9200
+    uid: elasticsearch
+    basicAuth: true
+    basicAuthUser: elastic
+    secureJsonData:
+      basicAuthPassword: ElasticPass123!
+    jsonData:
+      index: "logs-*"
+      timeField: "@timestamp"
+      esVersion: "8.0.0"
+      logMessageField: "message"
+      logLevelField: "log_level"
+      maxConcurrentShardRequests: 5
+      includeFrozen: false
+    version: 1
+    editable: true

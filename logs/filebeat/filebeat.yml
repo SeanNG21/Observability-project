@@ -1,0 +1,180 @@
+# ============================================================
+# filebeat.yml - Production Log Collection
+# Collects: app logs, nginx, syslog, auth, docker containers
+# ============================================================
+filebeat.config:
+  modules:
+    path: ${path.config}/modules.d/*.yml
+    reload.enabled: false
+
+filebeat.autodiscover:
+  providers:
+    # Docker auto-discovery
+    - type: docker
+      hints.enabled: true
+      hints.default_config:
+        type: container
+        paths:
+          - /var/lib/docker/containers/${data.container.id}/*.log
+      templates:
+        # Portal service
+        - condition:
+            contains:
+              docker.container.labels.service: "portal"
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              json.keys_under_root: true
+              json.add_error_key: true
+              json.overwrite_keys: true
+              fields:
+                service: "portal"
+                log_type: "application"
+              fields_under_root: true
+        # API service
+        - condition:
+            contains:
+              docker.container.labels.service: "api"
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              json.keys_under_root: true
+              json.add_error_key: true
+              json.overwrite_keys: true
+              fields:
+                service: "api"
+                log_type: "application"
+              fields_under_root: true
+
+filebeat.inputs:
+  # Application JSON logs
+  - type: filestream
+    id: app-json-logs
+    enabled: true
+    paths:
+      - /var/log/app/portal/*.log
+      - /var/log/app/api/*.log
+    parsers:
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+    fields:
+      log_type: "application"
+      env: "production"
+    fields_under_root: true
+    close_inactive: 30m
+
+  # Nginx Access Log
+  - type: filestream
+    id: nginx-access
+    enabled: true
+    paths:
+      - /var/log/nginx/access.log
+      - /var/log/nginx/*-access.log
+    fields:
+      log_type: "nginx_access"
+      service: "nginx"
+      env: "production"
+    fields_under_root: true
+    close_inactive: 30m
+
+  # Nginx Error Log
+  - type: filestream
+    id: nginx-error
+    enabled: true
+    paths:
+      - /var/log/nginx/error.log
+      - /var/log/nginx/*-error.log
+    fields:
+      log_type: "nginx_error"
+      service: "nginx"
+      env: "production"
+    fields_under_root: true
+
+  # System Syslog
+  - type: filestream
+    id: syslog
+    enabled: true
+    paths:
+      - /var/log/syslog
+      - /var/log/messages
+    fields:
+      log_type: "syslog"
+      service: "system"
+    fields_under_root: true
+
+  # Auth Log
+  - type: filestream
+    id: auth-log
+    enabled: true
+    paths:
+      - /var/log/auth.log
+      - /var/log/secure
+    fields:
+      log_type: "auth"
+      service: "system"
+    fields_under_root: true
+
+  # MySQL Slow Query Log
+  - type: filestream
+    id: mysql-slow
+    enabled: true
+    paths:
+      - /var/log/mysql/slow.log
+    fields:
+      log_type: "mysql_slow"
+      service: "mysql"
+    fields_under_root: true
+    multiline.type: pattern
+    multiline.pattern: '^# Time:'
+    multiline.negate: true
+    multiline.match: after
+
+  # MySQL Error Log
+  - type: filestream
+    id: mysql-error
+    enabled: true
+    paths:
+      - /var/log/mysql/error.log
+    fields:
+      log_type: "mysql_error"
+      service: "mysql"
+    fields_under_root: true
+
+# Add hostname to all events
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+  - add_fields:
+      target: ""
+      fields:
+        cluster: "production"
+        region: "vn-hanoi"
+
+# Output to Logstash for processing
+output.logstash:
+  hosts:
+    - "${LOGSTASH_HOST:logstash:5044}"
+  bulk_max_size: 2048
+  timeout: 15
+  worker: 4
+  compression_level: 3
+
+# Logging
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+
+# Monitoring
+monitoring.enabled: true
+http.enabled: true
+http.port: 5066

@@ -1,0 +1,361 @@
+# ============================================================
+# alert-rules-application.yml
+# Application, Nginx, DB, Redis, Kafka Alert Rules
+# ============================================================
+groups:
+
+  # ==========================================================
+  # NGINX ALERTS
+  # ==========================================================
+  - name: nginx.rules
+    rules:
+
+      - alert: Nginx5xxRateHigh
+        expr: |
+          sum by(hostname, env) (
+            rate(nginx_http_requests_total{status=~"5.."}[5m])
+          ) / sum by(hostname, env) (
+            rate(nginx_http_requests_total[5m])
+          ) * 100 > 5
+        for: 3m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "⚠️ Nginx 5xx cao: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: |
+            Tỷ lệ lỗi 5xx: {{ $value | humanize }}% trong 5 phút
+            Server: {{ $labels.hostname }}
+          runbook: |
+            1. tail -f /var/log/nginx/error.log
+            2. grep " 5[0-9][0-9] " /var/log/nginx/access.log | tail -50
+            3. Kiểm tra upstream backend có hoạt động không
+            4. nginx -t && systemctl reload nginx
+
+      - alert: Nginx5xxRateCritical
+        expr: |
+          sum by(hostname, env) (
+            rate(nginx_http_requests_total{status=~"5.."}[5m])
+          ) / sum by(hostname, env) (
+            rate(nginx_http_requests_total[5m])
+          ) * 100 > 20
+        for: 1m
+        labels:
+          severity: critical
+          team: app
+        annotations:
+          summary: "🔴 Nginx 5xx CRITICAL: {{ $labels.hostname }} ({{ $value | humanize }}%)"
+          description: "5xx rate vượt 20% - Toàn bộ service có thể đang lỗi!"
+
+      - alert: NginxHighLatency
+        expr: |
+          histogram_quantile(0.99, 
+            sum by(le, hostname) (rate(nginx_http_request_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "⚠️ Nginx latency cao p99: {{ $labels.hostname }} ({{ $value | humanize }}s)"
+          description: "p99 latency: {{ $value | humanize }}s (threshold: 5s)"
+
+  # ==========================================================
+  # APPLICATION API ALERTS
+  # ==========================================================
+  - name: api.rules
+    rules:
+
+      - alert: APIHighErrorRate
+        expr: |
+          sum by(service, env, endpoint) (
+            rate(http_requests_total{status=~"5..", job=~"api-service|portal-service"}[5m])
+          ) / sum by(service, env, endpoint) (
+            rate(http_requests_total{job=~"api-service|portal-service"}[5m])
+          ) * 100 > 5
+        for: 3m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "⚠️ API Error Rate cao: {{ $labels.service }}/{{ $labels.endpoint }}"
+          description: |
+            Error rate: {{ $value | humanize }}% trên {{ $labels.service }}
+            Endpoint: {{ $labels.endpoint }}
+
+      - alert: APIHighResponseTime
+        expr: |
+          histogram_quantile(0.95, 
+            sum by(le, service, env) (
+              rate(http_request_duration_seconds_bucket{job=~"api-service|portal-service"}[5m])
+            )
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "⚠️ API latency p95 cao: {{ $labels.service }} ({{ $value | humanize }}s)"
+          description: |
+            p95 response time: {{ $value | humanize }}s (threshold: 2s)
+            Service: {{ $labels.service }}
+          runbook: |
+            1. Kiểm tra trace trong Grafana/Tempo để xác định bottleneck
+            2. Kiểm tra DB slow query log
+            3. Kiểm tra kết nối DB pool
+            4. Correlate với log qua trace_id trong Kibana
+
+      - alert: APIHighResponseTimeCritical
+        expr: |
+          histogram_quantile(0.95,
+            sum by(le, service, env) (
+              rate(http_request_duration_seconds_bucket{job=~"api-service|portal-service"}[5m])
+            )
+          ) > 10
+        for: 2m
+        labels:
+          severity: critical
+          team: app
+        annotations:
+          summary: "🔴 API CHẬM NGHIÊM TRỌNG: {{ $labels.service }} p95={{ $value | humanize }}s"
+
+      - alert: APIHighRequestRate
+        expr: |
+          sum by(service, env) (rate(http_requests_total{job=~"api-service|portal-service"}[5m])) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "⚠️ API traffic tăng đột biến: {{ $labels.service }} ({{ $value | humanize }} rps)"
+          description: "Request rate: {{ $value | humanize }} req/s - Có thể cần scale"
+
+  # ==========================================================
+  # DATABASE ALERTS - MySQL/MariaDB
+  # ==========================================================
+  - name: mysql.rules
+    rules:
+
+      - alert: MySQLDown
+        expr: mysql_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: dba
+        annotations:
+          summary: "🔴 MySQL DOWN: {{ $labels.instance }}"
+          description: "MySQL/MariaDB không phản hồi tại {{ $labels.instance }}"
+          runbook: |
+            1. systemctl status mysql
+            2. journalctl -u mysql -n 50
+            3. cat /var/log/mysql/error.log | tail -50
+            4. systemctl restart mysql
+
+      - alert: MySQLHighConnections
+        expr: |
+          mysql_global_status_threads_connected / mysql_global_variables_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "⚠️ MySQL connections cao: {{ $labels.instance }} ({{ $value | humanize }}%)"
+          description: |
+            DB connections: {{ $value | humanize }}% của max_connections
+            Instance: {{ $labels.instance }}
+          runbook: |
+            1. SHOW PROCESSLIST;
+            2. SHOW STATUS LIKE 'Threads_connected';
+            3. Xem các query đang chạy: SHOW FULL PROCESSLIST;
+            4. Kill slow query nếu cần: KILL QUERY <id>;
+
+      - alert: MySQLSlowQueries
+        expr: |
+          rate(mysql_global_status_slow_queries[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "⚠️ MySQL slow queries: {{ $labels.instance }} ({{ $value | humanize }}/s)"
+          description: "Slow query rate: {{ $value | humanize }}/s trên {{ $labels.instance }}"
+          runbook: |
+            1. Bật slow query log: SET GLOBAL slow_query_log = 'ON';
+            2. Xem slow log: mysqldumpslow /var/log/mysql/slow.log
+            3. EXPLAIN query để tìm missing index
+            4. Correlate với trace_id trong Kibana/Tempo
+
+      - alert: MySQLReplicationLag
+        expr: mysql_slave_status_seconds_behind_master > 30
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "⚠️ MySQL replication lag: {{ $labels.instance }} ({{ $value }}s)"
+          description: "Slave lag: {{ $value }}s (threshold: 30s)"
+
+      - alert: MySQLTableLockWaits
+        expr: rate(mysql_global_status_table_locks_waited[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "⚠️ MySQL table lock waits cao: {{ $labels.instance }}"
+
+  # ==========================================================
+  # REDIS ALERTS
+  # ==========================================================
+  - name: redis.rules
+    rules:
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Redis DOWN: {{ $labels.instance }}"
+          runbook: "systemctl restart redis && redis-cli ping"
+
+      - alert: RedisHighMemory
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Redis memory cao: {{ $labels.instance }} ({{ $value | humanize }}%)"
+          description: "Redis đang dùng {{ $value | humanize }}% memory"
+          runbook: |
+            1. redis-cli INFO memory
+            2. redis-cli INFO stats | grep evicted_keys
+            3. Xem eviction policy: CONFIG GET maxmemory-policy
+            4. Tăng maxmemory nếu cần
+
+      - alert: RedisHighEvictions
+        expr: rate(redis_evicted_keys_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Redis eviction cao: {{ $labels.instance }} ({{ $value | humanize }}/s)"
+          description: "Redis đang evict {{ $value | humanize }} keys/s - Memory có thể thiếu"
+
+      - alert: RedisHighConnections
+        expr: redis_connected_clients > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Redis connections cao: {{ $labels.instance }} ({{ $value }})"
+
+      - alert: RedisReplicationBroken
+        expr: redis_connected_slaves < 1
+        for: 5m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Redis replication broken: {{ $labels.instance }}"
+
+  # ==========================================================
+  # KAFKA ALERTS
+  # ==========================================================
+  - name: kafka.rules
+    rules:
+
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumergroup_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Kafka consumer lag cao: {{ $labels.consumergroup }}/{{ $labels.topic }}"
+          description: |
+            Consumer group {{ $labels.consumergroup }} lag: {{ $value }}
+            Topic: {{ $labels.topic }}, Partition: {{ $labels.partition }}
+          runbook: |
+            1. kafka-consumer-groups.sh --describe --group {{ $labels.consumergroup }}
+            2. Kiểm tra consumer có đang chạy không
+            3. Xem throughput topic
+            4. Có thể cần tăng số partition hoặc consumer instance
+
+      - alert: KafkaConsumerLagCritical
+        expr: kafka_consumergroup_lag > 100000
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Kafka lag CRITICAL: {{ $labels.consumergroup }} ({{ $value }})"
+
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 3
+        for: 1m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Kafka broker down! Còn {{ $value }} brokers"
+
+  # ==========================================================
+  # ELASTICSEARCH ALERTS
+  # ==========================================================
+  - name: elasticsearch.rules
+    rules:
+
+      - alert: ElasticsearchClusterRed
+        expr: elasticsearch_cluster_health_status{color="red"} == 1
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "🔴 Elasticsearch cluster RED!"
+          description: "Cluster health là RED - Dữ liệu có thể mất hoặc không available"
+          runbook: |
+            1. GET _cluster/health?pretty
+            2. GET _cat/shards?v&h=index,shard,prirep,state,docs,store,ip,node
+            3. GET _cat/nodes?v
+            4. Tìm unassigned shard: GET _cat/shards?h=index,shard,prirep,state&v
+
+      - alert: ElasticsearchClusterYellow
+        expr: elasticsearch_cluster_health_status{color="yellow"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Elasticsearch cluster YELLOW"
+          description: "Một số replica shards chưa assigned - Cluster đang degraded"
+
+      - alert: ElasticsearchHighDisk
+        expr: |
+          elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Elasticsearch disk thấp: {{ $value | humanize }}% còn lại"
+          runbook: |
+            1. Xem ILM policy có đang hoạt động không
+            2. DELETE index cũ nếu cần: DELETE /logs-*-2024.01.*
+            3. Tăng disk hoặc thêm node
+
+      - alert: ElasticsearchHighJVMMemory
+        expr: |
+          elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "⚠️ Elasticsearch JVM heap cao: {{ $value | humanize }}%"

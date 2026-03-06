@@ -1,0 +1,297 @@
+version: "3.9"
+
+# ============================================================
+# OBSERVABILITY STACK - Full Production-Grade Setup
+# Metrics: Prometheus + Node Exporter + Alertmanager + Grafana
+# Logs:    Elasticsearch + Logstash + Filebeat + Kibana
+# Traces:  OpenTelemetry Collector + Tempo
+# ============================================================
+
+networks:
+  observability:
+    driver: bridge
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  elasticsearch_data:
+  tempo_data:
+  alertmanager_data:
+
+services:
+
+  # ============================================================
+  # METRICS STACK
+  # ============================================================
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=20GB"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+      - "--web.listen-address=0.0.0.0:9090"
+    ports:
+      - "9090:9090"
+    networks:
+      - observability
+      - monitoring
+    labels:
+      - "service=prometheus"
+      - "env=production"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/templates:/etc/alertmanager/templates:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=0.0.0.0:9093"
+      - "--cluster.listen-address="
+    ports:
+      - "9093:9093"
+    networks:
+      - observability
+    labels:
+      - "service=alertmanager"
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: unless-stopped
+    pid: host
+    network_mode: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.rootfs=/rootfs"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - "--collector.netclass.ignored-devices=^(veth|docker|br-|lo).*"
+      - "--web.listen-address=0.0.0.0:9100"
+    labels:
+      - "service=node-exporter"
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=SuperSecretPass123!
+      - GF_SERVER_ROOT_URL=http://grafana.yourdomain.com
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=smtp.yourdomain.com:587
+      - GF_SMTP_USER=grafana@yourdomain.com
+      - GF_SMTP_PASSWORD=smtp_password
+      - GF_SMTP_FROM_ADDRESS=grafana@yourdomain.com
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_LOG_LEVEL=info
+    ports:
+      - "3000:3000"
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - tempo
+    labels:
+      - "service=grafana"
+
+  # ============================================================
+  # TRACING STACK
+  # ============================================================
+
+  tempo:
+    image: grafana/tempo:2.4.1
+    container_name: tempo
+    restart: unless-stopped
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
+    command:
+      - "-config.file=/etc/tempo.yaml"
+    ports:
+      - "3200:3200"   # tempo HTTP API
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    networks:
+      - observability
+    labels:
+      - "service=tempo"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    container_name: otel-collector
+    restart: unless-stopped
+    volumes:
+      - ./otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+    ports:
+      - "4319:4317"   # OTLP gRPC (app -> collector)
+      - "4320:4318"   # OTLP HTTP (app -> collector)
+      - "8888:8888"   # Collector metrics
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # health_check
+    networks:
+      - observability
+      - monitoring
+    depends_on:
+      - tempo
+    labels:
+      - "service=otel-collector"
+
+  # ============================================================
+  # LOGGING STACK - ELK
+  # ============================================================
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: elasticsearch
+    restart: unless-stopped
+    environment:
+      - node.name=es01
+      - cluster.name=observability-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - ELASTIC_PASSWORD=ElasticPass123!
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+      - ./elk/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - observability
+    labels:
+      - "service=elasticsearch"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: kibana
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=KibanaPass123!
+      - XPACK_SECURITY_ENABLED=true
+    volumes:
+      - ./elk/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    ports:
+      - "5601:5601"
+    networks:
+      - observability
+    depends_on:
+      - elasticsearch
+    labels:
+      - "service=kibana"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.0
+    container_name: logstash
+    restart: unless-stopped
+    environment:
+      - "LS_JAVA_OPTS=-Xmx1g -Xms1g"
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTIC_PASSWORD=ElasticPass123!
+    volumes:
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./elk/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+    ports:
+      - "5044:5044"   # Beats input
+      - "5000:5000"   # TCP syslog
+      - "9600:9600"   # Logstash monitoring
+    networks:
+      - observability
+    depends_on:
+      - elasticsearch
+    labels:
+      - "service=logstash"
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.0
+    container_name: filebeat
+    restart: unless-stopped
+    user: root
+    volumes:
+      - ./elk/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - LOGSTASH_HOST=logstash:5044
+    networks:
+      - observability
+    depends_on:
+      - logstash
+    labels:
+      - "service=filebeat"
+
+  # ============================================================
+  # EXPORTERS (add to target servers)
+  # ============================================================
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.24.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    ports:
+      - "9115:9115"
+    networks:
+      - observability
+      - monitoring
+    labels:
+      - "service=blackbox-exporter"
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.1.0
+    container_name: nginx-exporter
+    restart: unless-stopped
+    command:
+      - "-nginx.scrape-uri=http://nginx:8080/stub_status"
+    ports:
+      - "9113:9113"
+    networks:
+      - observability
+      - monitoring
+    labels:
+      - "service=nginx-exporter"
