@@ -89,7 +89,7 @@ sleep 30
 
 ### Bước 2: Setup Elasticsearch
 ```bash
-bash elk/elasticsearch/setup-elasticsearch.sh
+bash logs/elasticsearch/setup-elasticsearch.sh
 ```
 
 ### Bước 3: Start toàn bộ stack

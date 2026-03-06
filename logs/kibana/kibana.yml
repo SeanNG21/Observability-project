@@ -1,0 +1,24 @@
+# kibana.yml
+server.host: "0.0.0.0"
+server.port: 5601
+server.name: "kibana"
+
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "KibanaPass123!"
+
+# Logging
+logging.appenders.default:
+  type: console
+  layout:
+    type: json
+logging.root.level: warn
+
+# Security
+xpack.security.enabled: true
+xpack.encryptedSavedObjects.encryptionKey: "min-32-char-encryption-key-here!!"
+xpack.reporting.encryptionKey: "min-32-char-reporting-key-here!!!"
+xpack.security.encryptionKey: "min-32-char-security-key-here!!!!"
+
+# Monitoring
+monitoring.kibana.collection.enabled: false

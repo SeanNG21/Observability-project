@@ -2,7 +2,6 @@
 # alertmanager.yml - Production Configuration
 # Routes: Critical -> Telegram + Email, Warning -> Email
 # ============================================================
-
 global:
   resolve_timeout: 5m
   smtp_smarthost: "smtp.yourdomain.com:587"
@@ -95,8 +94,7 @@ receivers:
       - to: "ops-team@yourdomain.com"
         send_resolved: true
         html: '{{ template "email.default.html" . }}'
-        headers:
-          subject: '[{{ .Status | toUpper }}] {{ .CommonAnnotations.summary }}'
+        subject: '[{{ .Status | toUpper }}] {{ .CommonAnnotations.summary }}'
 
   - name: "critical-receiver"
     telegram_configs:
@@ -109,23 +107,20 @@ receivers:
       - to: "ops-critical@yourdomain.com, cto@yourdomain.com"
         send_resolved: true
         html: '{{ template "email.critical.html" . }}'
-        headers:
-          subject: '🔴 [CRITICAL] {{ .CommonAnnotations.summary }}'
+        subject: '🔴 [CRITICAL] {{ .CommonAnnotations.summary }}'
 
   - name: "warning-email"
     email_configs:
       - to: "ops-team@yourdomain.com"
         send_resolved: true
         html: '{{ template "email.default.html" . }}'
-        headers:
-          subject: '⚠️ [WARNING] {{ .CommonAnnotations.summary }}'
+        subject: '⚠️ [WARNING] {{ .CommonAnnotations.summary }}'
 
   - name: "dba-team"
     email_configs:
       - to: "dba-team@yourdomain.com"
         send_resolved: true
-        headers:
-          subject: '[DB ALERT] {{ .CommonAnnotations.summary }}'
+        subject: '[DB ALERT] {{ .CommonAnnotations.summary }}'
 
   - name: "dba-critical"
     telegram_configs:

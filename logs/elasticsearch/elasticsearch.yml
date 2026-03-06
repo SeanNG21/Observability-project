@@ -16,9 +16,9 @@ xpack.security.transport.ssl.enabled: false
 # Memory settings
 bootstrap.memory_lock: true
 
-# Path settings
-path.data: /usr/share/elasticsearch/data
-path.logs: /var/log/elasticsearch
+# path.data và path.logs KHÔNG cần set trong Docker
+# Image đã mặc định: data=/usr/share/elasticsearch/data, logs=stdout
+# Nếu set path.logs ra ngoài /usr/share/elasticsearch thì ES không có permission
 
 # Performance
 indices.memory.index_buffer_size: 30%

@@ -5,6 +5,17 @@ version: "3.9"
 # Metrics: Prometheus + Node Exporter + Alertmanager + Grafana
 # Logs:    Elasticsearch + Logstash + Filebeat + Kibana
 # Traces:  OpenTelemetry Collector + Tempo
+#
+# Tất cả volume path dưới đây khớp chính xác cấu trúc folder:
+#   metrics/prometheus/         → Prometheus config + rules
+#   metrics/alertmanager/       → Alertmanager config + templates
+#   metrics/grafana/            → Grafana provisioning + dashboards
+#   logs/elasticsearch/         → Elasticsearch config
+#   logs/kibana/                → Kibana config
+#   logs/logstash/              → Logstash config + pipeline
+#   logs/filebeat/              → Filebeat config
+#   traces/otel-collector/      → OTel Collector config
+#   traces/tempo/               → Tempo config
 # ============================================================
 
 networks:
@@ -19,6 +30,7 @@ volumes:
   elasticsearch_data:
   tempo_data:
   alertmanager_data:
+  logstash_data:
 
 services:
 
@@ -31,8 +43,8 @@ services:
     container_name: prometheus
     restart: unless-stopped
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ./metrics/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./metrics/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -58,8 +70,8 @@ services:
     container_name: alertmanager
     restart: unless-stopped
     volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - ./alertmanager/templates:/etc/alertmanager/templates:ro
+      - ./metrics/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./metrics/alertmanager/templates:/etc/alertmanager/templates:ro
       - alertmanager_data:/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
@@ -99,21 +111,17 @@ services:
     restart: unless-stopped
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./metrics/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./metrics/grafana/dashboards:/var/lib/grafana/dashboards:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=SuperSecretPass123!
-      - GF_SERVER_ROOT_URL=http://grafana.yourdomain.com
-      - GF_SMTP_ENABLED=true
-      - GF_SMTP_HOST=smtp.yourdomain.com:587
-      - GF_SMTP_USER=grafana@yourdomain.com
-      - GF_SMTP_PASSWORD=smtp_password
-      - GF_SMTP_FROM_ADDRESS=grafana@yourdomain.com
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SMTP_ENABLED=false
       - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
       - GF_AUTH_ANONYMOUS_ENABLED=false
-      - GF_LOG_LEVEL=info
+      - GF_LOG_LEVEL=warn
     ports:
       - "3000:3000"
     networks:
@@ -124,6 +132,20 @@ services:
     labels:
       - "service=grafana"
 
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.24.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    volumes:
+      - ./metrics/prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    ports:
+      - "9115:9115"
+    networks:
+      - observability
+      - monitoring
+    labels:
+      - "service=blackbox-exporter"
+
   # ============================================================
   # TRACING STACK
   # ============================================================
@@ -133,14 +155,14 @@ services:
     container_name: tempo
     restart: unless-stopped
     volumes:
-      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - ./traces/tempo/tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/tmp/tempo
     command:
       - "-config.file=/etc/tempo.yaml"
     ports:
-      - "3200:3200"   # tempo HTTP API
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+      - "3200:3200"    # Tempo HTTP API
+      - "4317:4317"    # OTLP gRPC  (direct app → tempo)
+      - "4318:4318"    # OTLP HTTP  (direct app → tempo)
     networks:
       - observability
     labels:
@@ -151,15 +173,15 @@ services:
     container_name: otel-collector
     restart: unless-stopped
     volumes:
-      - ./otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./traces/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
     command:
       - "--config=/etc/otelcol-contrib/config.yaml"
     ports:
-      - "4319:4317"   # OTLP gRPC (app -> collector)
-      - "4320:4318"   # OTLP HTTP (app -> collector)
-      - "8888:8888"   # Collector metrics
-      - "8889:8889"   # Prometheus exporter
-      - "13133:13133" # health_check
+      - "4319:4317"    # OTLP gRPC  (app → collector → tempo)
+      - "4320:4318"    # OTLP HTTP  (app → collector → tempo)
+      - "8888:8888"    # Collector self-metrics
+      - "8889:8889"    # Prometheus scrape endpoint
+      - "13133:13133"  # Health check
     networks:
       - observability
       - monitoring
@@ -194,7 +216,7 @@ services:
         hard: 65536
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
-      - ./elk/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+      - ./logs/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
     ports:
       - "9200:9200"
       - "9300:9300"
@@ -211,9 +233,8 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
       - ELASTICSEARCH_USERNAME=kibana_system
       - ELASTICSEARCH_PASSWORD=KibanaPass123!
-      - XPACK_SECURITY_ENABLED=true
     volumes:
-      - ./elk/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+      - ./logs/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:
       - "5601:5601"
     networks:
@@ -232,12 +253,13 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
       - ELASTIC_PASSWORD=ElasticPass123!
     volumes:
-      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
-      - ./elk/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logs/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logs/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - logstash_data:/usr/share/logstash/data
     ports:
-      - "5044:5044"   # Beats input
-      - "5000:5000"   # TCP syslog
-      - "9600:9600"   # Logstash monitoring
+      - "5044:5044"    # Beats input
+      - "5000:5000"    # TCP syslog
+      - "9600:9600"    # Logstash monitoring API
     networks:
       - observability
     depends_on:
@@ -251,7 +273,7 @@ services:
     restart: unless-stopped
     user: root
     volumes:
-      - ./elk/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./logs/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/log:/var/log:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -263,35 +285,3 @@ services:
       - logstash
     labels:
       - "service=filebeat"
-
-  # ============================================================
-  # EXPORTERS (add to target servers)
-  # ============================================================
-
-  blackbox-exporter:
-    image: prom/blackbox-exporter:v0.24.0
-    container_name: blackbox-exporter
-    restart: unless-stopped
-    volumes:
-      - ./prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
-    ports:
-      - "9115:9115"
-    networks:
-      - observability
-      - monitoring
-    labels:
-      - "service=blackbox-exporter"
-
-  nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:1.1.0
-    container_name: nginx-exporter
-    restart: unless-stopped
-    command:
-      - "-nginx.scrape-uri=http://nginx:8080/stub_status"
-    ports:
-      - "9113:9113"
-    networks:
-      - observability
-      - monitoring
-    labels:
-      - "service=nginx-exporter"
